@@ -1,8 +1,9 @@
 import torch
 from .base_model import BaseModel
 from . import networks
-
-
+import os
+import torch.nn as nn
+import torch.nn.utils.prune as prune
 class Pix2PixModel(BaseModel):
     """ This class implements the pix2pix model, for learning a mapping from input images to output images given paired data.
 
@@ -69,6 +70,40 @@ class Pix2PixModel(BaseModel):
             self.optimizer_D = torch.optim.Adam(self.netD.parameters(), lr=opt.lr, betas=(opt.beta1, 0.999))
             self.optimizers.append(self.optimizer_G)
             self.optimizers.append(self.optimizer_D)
+
+    def save_init(self, path):
+        torch.save(self.netD.state_dict(), os.path.join(path, 'init_D.pth.tar'))
+        torch.save(self.netG.state_dict(), os.path.join(path, 'init_G.pth.tar'))
+    
+    def prune(self, px, path):
+        parameters_to_prune =[]
+        for m in self.net.G.modules():
+            if isinstance(m, nn.Conv2d) or isinstance(m, nn.ConvTranspose2d):
+                parameters_to_prune.append((m,'weight'))
+        parameters_to_prune = tuple(parameters_to_prune)
+        prune.global_unstructured(
+            parameters_to_prune,
+            pruning_method=prune.L1Unstructured,
+            amount=px,
+        )
+
+        new_dict = {}
+        state_dict = self.netG.model_dict()
+        for key in state_dict.keys():
+            if 'mask' in key:
+                new_dict[key] = state_dict[key]
+        for name,m in self.netG.named_modules():
+            if isinstance(m, nn.Conv2d):
+                prune.remove(m,'weight')
+
+        self.netD.load_state_dict(os.path.join(path, 'init_D.pth.tar'))
+        self.netG.load_state_dict(os.path.join(path, 'init_G.pth.tar'))
+
+        for name,m in self.netG.named_modules():
+            if isinstance(m, nn.Conv2d):
+                print('pruning layer with custom mask:', name)
+                prune.CustomFromMask.apply(m, 'weight', mask=new_dict[name+'.weight_mask'])
+
 
     def set_input(self, input):
         """Unpack input data from the dataloader and perform necessary pre-processing steps.
